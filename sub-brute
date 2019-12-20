@@ -1,0 +1,26 @@
+function sub-brute()
+{	
+	# Needs to be passed to a var due to not being able to properly use with other strings
+	a=$1
+	b=$2
+
+	RED='\033[0;31m'
+	YELLOW='\033[0;33m'
+	usage(){
+	echo -e "${RED}Usage: sub-brute <TARGET-IP> <Host: HOSTNAME>"
+	echo -e "${YELLOW}"
+	echo -e "\tWhat the command currently looks like: "
+	echo -e "\tffuf -w /usr/share/wordlists/SecLists/Discovery/DNS/dns-Jhaddix.txt -u $a -H 'Host: $b' --fs $length"
+	}
+
+	# Grabs the Content-length of a non-existent hostname
+	length=$(curl --header "Host: xyz" -v -s http://$a 2>&1 | grep -oP '(?<=< Content-Length: ).*')
+
+	if [ $# -ge 2 ]
+	then
+		echo -e "ffuf -w /usr/share/wordlists/SecLists/Discovery/DNS/dns-Jhaddix.txt -u $a -H 'Host: $b' --fs $length"
+  		ffuf -w /usr/share/wordlists/SecLists/Discovery/DNS/dns-Jhaddix.txt -u $a -H "Host: $b" --fs "$length"
+  	else
+  		usage
+	fi
+}
