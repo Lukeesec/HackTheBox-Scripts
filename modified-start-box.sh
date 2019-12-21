@@ -3,8 +3,6 @@
 
 # Creds to the cretor of nmapAutomater: https://github.com/21y4d/nmapAutomator
 
-# Expects to be in a tmux session already (fix later)
-
 # List of tools used:
 # xyz
 
@@ -18,6 +16,88 @@
 # [6] If there is a hostname -- add it to /etc/hosts, if not, do nothing
 # [7] Run cherrytree in the first window, first pane (or split pane, then use second pane?)
 
+# Functions to add
+'
+if [ -f nmap/UDP_$1.nmap ] && [[ ! -z `cat nmap/UDP_$1.nmap | grep open | grep -w "161/udp"` ]]; then
+	echo -e "${NC}"
+	echo -e "${YELLOW}SNMP Recon:"
+	echo -e "${NC}"
+	echo "snmp-check $1 -c public | tee recon/snmpcheck_$1.txt"
+	echo "snmpwalk -Os -c public -v $1 | tee recon/snmpwalk_$1.txt"
+	echo ""
+fi
+'
+
+'
+if [[ ! -z `echo "${file}" | grep -w "445/tcp"` ]]; then
+	echo -e "${NC}"
+	echo -e "${YELLOW}SMB Recon:"
+	echo -e "${NC}"
+	echo "smbmap -H $1 | tee recon/smbmap_$1.txt"
+	echo "smbclient -L \"//$1/\" -U \"guest\"% | tee recon/smbclient_$1.txt"
+	if [[ $osType == "Windows" ]]; then
+		echo "nmap -Pn -p445 --script vuln -oN recon/SMB_vulns_$1.txt $1"
+	fi
+	if [[ $osType == "Linux" ]]; then
+		echo "enum4linux -a $1 | tee recon/enum4linux_$1.txt"
+	fi
+	echo ""
+elif [[ ! -z `echo "${file}" | grep -w "139/tcp"` ]] && [[ $osType == "Linux" ]]; then
+	echo -e "${NC}"
+	echo -e "${YELLOW}SMB Recon:"
+	echo -e "${NC}"
+	echo "enum4linux -a $1 | tee recon/enum4linux_$1.txt"
+	echo ""
+fi
+'
+
+'
+if [ -f nmap/Basic_$1.nmap ]; then
+	cms=`cat nmap/Basic_$1.nmap | grep http-generator | cut -d " " -f 2`
+	if [ ! -z `echo "${cms}"` ]; then
+		for line in $cms; do
+			port=`cat nmap/Basic_$1.nmap | grep $line -B1 | grep -w "open" | cut -d "/" -f 1`
+			if [[ "$cms" =~ ^(Joomla|WordPress|Drupal)$ ]]; then
+				echo -e "${NC}"
+				echo -e "${YELLOW}CMS Recon:"
+				echo -e "${NC}"
+			fi
+			case "$cms" in
+				Joomla!) echo "joomscan --url $1:$port | tee recon/joomscan_$1_$port.txt";;
+				WordPress) echo "wpscan --url $1:$port --enumerate p | tee recon/wpscan_$1_$port.txt";;
+				Drupal) echo "droopescan scan drupal -u $1:$port | tee recon/droopescan_$1_$port.txt";;
+			esac
+		done
+	fi
+fi
+'
+
+' # Use ffuf instead
+if [[ ! -z `echo "${file}" | grep -w "53/tcp"` ]]; then
+	echo -e "${NC}"
+	echo -e "${YELLOW}DNS Recon:"
+	echo -e "${NC}"
+	echo "host -l $1 $1 | tee recon/hostname_$1.txt"
+	echo "dnsrecon -r $subnet/24 -n $1 | tee recon/dnsrecon_$1.txt"
+	echo "dnsrecon -r 127.0.0.0/24 -n $1 | tee recon/dnsrecon-local_$1.txt"
+	echo ""
+fi
+'
+
+'
+if [[ ! -z `echo "${file}" | grep -w "1521/tcp"` ]]; then
+	echo -e "${NC}"
+	echo -e "${YELLOW}Oracle Recon \"Exc. from Default\":"
+	echo -e "${NC}"
+	echo "cd /opt/odat/;#$1;"
+	echo "./odat.py sidguesser -s $1 -p 1521"
+	echo "./odat.py passwordguesser -s $1 -p 1521 -d XE --accounts-file accounts/accounts-multiple.txt"
+	echo "cd -;#$1;"
+	echo ""
+fi
+'
+
+
 RED='\033[0;31m'
 YELLOW='\033[0;33m'
 GREEN='\033[0;32m'
@@ -27,17 +107,11 @@ function usage(){
 	echo -e "${RED}Usage: $0 <TARGET-IP> <HostName>"
 	echo -e "${YELLOW}"
 	echo -e "\tHostName:    Creates files using hostname instead of the IP"
-	echo -e ""
-	echo -e "\tInfo:"
-	echo -e ""
-	echo -e "\t[1] Run the below command below to have less false positives during dirb"
-	echo -e "\tsed -i '/#/d' /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt"
-	echo -e ""
-	echo -e "\t[2] Must already be in a tmux session"
-	echo -e ""
+	echo -e "\tCreates 4 windows & splits 1 & 3"
+	echo -e "\t[1] Window 1 split horizontal"
+	echo -e "\t[2] Window 3 split horizontal then vertically"
 	exit 1
 }
-
 
 function nmapScan() {
 	echo -e ""
@@ -119,7 +193,7 @@ function tmuxCreate() {
 		fi
 
 		if [ "$n" == "4" ]; then
-			tmux send-keys "burpsuite"
+			tmux send-keys "burpsuite" C-m
 		fi
 
 		n=$(($n+1))
@@ -159,10 +233,10 @@ reconRecommend(){
 			pages=.php,.html
 			if [[ ! -z `echo "${line}" | grep ssl/http` ]]; then
 				echo "sslscan $1 | tee $2/recon/sslscan_$port.txt"
-				echo "ffuf -u https://$1:$port/FUZZ -w /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt -t 40 -r -e $pages -o $2/recon/dirb_$port.txt"
+				echo "gobuster dir -w /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt -l -t 40 -e -k -x $pages -u https://$1:$port -o $2/recon/gobuster_$port.txt"
 				echo "nikto -host https://$1:$port -ssl | tee $2/recon/nikto_$port.txt"
 			else
-				echo "ffuf -u https://$1:$port/FUZZ -w /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt -t 40 -r -e $pages -o $2/recon/dirb_$port.txt"
+				echo "gobuster dir -w /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt -l -t 40 -e -k -x $pages -u http://$1:$port -o $2/recon/gobuster_$port.txt"
 				echo "nikto -host $1:$port | tee $2/recon/nikto_$port.txt"
 			fi
 			echo ""
@@ -228,7 +302,7 @@ function checkValid() {
 	fi
 }
 
-# set -x
+# set -x1
 
 # nmapScan / tmuxCreate / checkValid
 function footer() {
@@ -298,85 +372,3 @@ function footer() {
 }
 
 footer $1 $2 $3
-
-
-# Functions to add
-# '
-# if [ -f nmap/UDP_$1.nmap ] && [[ ! -z `cat nmap/UDP_$1.nmap | grep open | grep -w "161/udp"` ]]; then
-# 	echo -e "${NC}"
-# 	echo -e "${YELLOW}SNMP Recon:"
-# 	echo -e "${NC}"
-# 	echo "snmp-check $1 -c public | tee recon/snmpcheck_$1.txt"
-# 	echo "snmpwalk -Os -c public -v $1 | tee recon/snmpwalk_$1.txt"
-# 	echo ""
-# fi
-# '
-
-# '
-# if [[ ! -z `echo "${file}" | grep -w "445/tcp"` ]]; then
-# 	echo -e "${NC}"
-# 	echo -e "${YELLOW}SMB Recon:"
-# 	echo -e "${NC}"
-# 	echo "smbmap -H $1 | tee recon/smbmap_$1.txt"
-# 	echo "smbclient -L \"//$1/\" -U \"guest\"% | tee recon/smbclient_$1.txt"
-# 	if [[ $osType == "Windows" ]]; then
-# 		echo "nmap -Pn -p445 --script vuln -oN recon/SMB_vulns_$1.txt $1"
-# 	fi
-# 	if [[ $osType == "Linux" ]]; then
-# 		echo "enum4linux -a $1 | tee recon/enum4linux_$1.txt"
-# 	fi
-# 	echo ""
-# elif [[ ! -z `echo "${file}" | grep -w "139/tcp"` ]] && [[ $osType == "Linux" ]]; then
-# 	echo -e "${NC}"
-# 	echo -e "${YELLOW}SMB Recon:"
-# 	echo -e "${NC}"
-# 	echo "enum4linux -a $1 | tee recon/enum4linux_$1.txt"
-# 	echo ""
-# fi
-# '
-
-# '
-# if [ -f nmap/Basic_$1.nmap ]; then
-# 	cms=`cat nmap/Basic_$1.nmap | grep http-generator | cut -d " " -f 2`
-# 	if [ ! -z `echo "${cms}"` ]; then
-# 		for line in $cms; do
-# 			port=`cat nmap/Basic_$1.nmap | grep $line -B1 | grep -w "open" | cut -d "/" -f 1`
-# 			if [[ "$cms" =~ ^(Joomla|WordPress|Drupal)$ ]]; then
-# 				echo -e "${NC}"
-# 				echo -e "${YELLOW}CMS Recon:"
-# 				echo -e "${NC}"
-# 			fi
-# 			case "$cms" in
-# 				Joomla!) echo "joomscan --url $1:$port | tee recon/joomscan_$1_$port.txt";;
-# 				WordPress) echo "wpscan --url $1:$port --enumerate p | tee recon/wpscan_$1_$port.txt";;
-# 				Drupal) echo "droopescan scan drupal -u $1:$port | tee recon/droopescan_$1_$port.txt";;
-# 			esac
-# 		done
-# 	fi
-# fi
-# '
-
-# ' # Use ffuf instead
-# if [[ ! -z `echo "${file}" | grep -w "53/tcp"` ]]; then
-# 	echo -e "${NC}"
-# 	echo -e "${YELLOW}DNS Recon:"
-# 	echo -e "${NC}"
-# 	echo "host -l $1 $1 | tee recon/hostname_$1.txt"
-# 	echo "dnsrecon -r $subnet/24 -n $1 | tee recon/dnsrecon_$1.txt"
-# 	echo "dnsrecon -r 127.0.0.0/24 -n $1 | tee recon/dnsrecon-local_$1.txt"
-# 	echo ""
-# fi
-# '
-
-# '
-# if [[ ! -z `echo "${file}" | grep -w "1521/tcp"` ]]; then
-# 	echo -e "${NC}"
-# 	echo -e "${YELLOW}Oracle Recon \"Exc. from Default\":"
-# 	echo -e "${NC}"
-# 	echo "cd /opt/odat/;#$1;"
-# 	echo "./odat.py sidguesser -s $1 -p 1521"
-# 	echo "./odat.py passwordguesser -s $1 -p 1521 -d XE --accounts-file accounts/accounts-multiple.txt"
-# 	echo "cd -;#$1;"
-# 	echo ""
-# fi
-# '
