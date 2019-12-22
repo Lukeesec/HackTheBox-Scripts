@@ -242,15 +242,15 @@ function footer() {
 			# Run quick & full scan ($3 is the hostname provided as arg 2 -- if it was provided, if not, then it's the IP)
 			nmapScan $1 $3
 		else
-			# Create windows & panes
-			tmuxCreate $1 $2
-
 			# Checks if a hostname was provided, if not then IP will 
 			# be used to name files
 			name=$2
 			if [ -z "$2" ]; then
 				name=$1
 			fi
+
+			# Create windows & panes
+			tmuxCreate $1 $name
 
 			# Call script to run nmapScan in new window/pane
 			tmux send-keys "$0 $1 recurse1 $name" C-m
