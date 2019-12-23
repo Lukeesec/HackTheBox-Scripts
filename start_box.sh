@@ -6,7 +6,20 @@
 # Expects to be in a tmux session already (fix later)
 
 # List of tools used:
-# xyz
+# HTTP: -----
+# sslscan
+# ffuf
+# nikto
+# joomscan
+# wpscan
+# droopescan
+# ffuf (sub-domain dirbusting)
+# Windows: -----
+# smbmap/smbclient 
+# enum4linux
+# snmpwalk
+# snmp-check
+# odat.py sidguesser/passwordgusser
 
 # TODO:
 # [1] Add more tools to be ran automatically
@@ -103,7 +116,13 @@ function checkOS() {
 }
 
 function tmuxCreate() {	
-	declare -a names=("htb" "nmap/web" "burp")
+
+	tmux rename-window -t 1 "bg-tools"
+	tmux send-keys -t 1 "cherrytree $2/$2.ctb"
+	tmux split -h
+	tmux send-keys -t 2 "burpsuite"
+
+	declare -a names=("main" "nmap/web" "misc")
 	n=2
 	for x in "${names[@]}"; do
 	  	tmux new-window -t $n 2>/dev/null || tmux select-window -t $n && tmux rename-window -t $n "$x"
@@ -115,18 +134,16 @@ function tmuxCreate() {
 
 	 	if [ "$n" == "3" ]; then
 	 		tmux kill-pane -a -t 1
-			tmux split -h && tmux split -v
+			tmux split -h
 		fi
 
 		if [ "$n" == "4" ]; then
-			tmux send-keys "burpsuite"
+	 		tmux kill-pane -a -t 1
+			tmux split -h
 		fi
 
 		n=$(($n+1))
 	done
-
-	# Renaming current window (1)
-	tmux rename-window -t 1 "cherry/vpn"
 
 	# Selecting window 3, pane 1 -- setup for running nmapScan
 	tmux select-window -t 3 && tmux selectp -t 1
@@ -143,6 +160,8 @@ reconRecommend(){
 		file=`cat $2/nmap/full_scan.nmap | grep -w "open"`
 
 	fi
+
+	osType="$(checkOS $ttl)"
 
 	oldIFS=$IFS
 	IFS=$'\n'
@@ -169,6 +188,55 @@ reconRecommend(){
 		fi
 	done
 
+	if [ -f $2/nmap/full_scan.nmap ]; then
+	cms=`cat $2/nmap/full_scan.nmapp | grep http-generator | cut -d " " -f 2`
+		if [ ! -z `echo "${cms}"` ]; then
+			for line in $cms; do
+				port=`cat nmap/Basic_$1.nmap | grep $line -B1 | grep -w "open" | cut -d "/" -f 1`
+				if [[ "$cms" =~ ^(Joomla|WordPress|Drupal)$ ]]; then
+					echo -e "${NC}"
+					echo -e "${YELLOW}CMS Recon:"
+					echo -e "${NC}"
+				fi
+				case "$cms" in
+					Joomla!) echo "joomscan --url $1:$port | tee $2/recon/joomscan_$port.txt";;
+					WordPress) echo "wpscan --url $1:$port --enumerate p | tee $2/recon/wpscan_$port.txt";;
+					Drupal) echo "droopescan scan drupal -u $1:$port | tee $2recon/droopescan_$port.txt";;
+				esac
+			done
+		fi
+	fi
+
+	if [[ ! -z `echo "${file}" | grep -w "445/tcp"` ]]; then
+		echo -e "${NC}"
+		echo -e "${YELLOW}SMB Recon:"
+		echo -e "${NC}"
+		echo "smbmap -H $1 | tee $2/recon/smbmap.txt"
+		echo "smbclient -L \"//$1/\" -U \"guest\"% | tee $2/recon/smbclient.txt"
+		if [[ $osType == "Windows" ]]; then
+			echo "nmap -Pn -p445 --script vuln -oN $2/recon/SMB_vulns.txt $1"
+		fi
+		if [[ $osType == "Linux" ]]; then
+			echo "enum4linux -a $1 | tee $2/recon/enum4linux.txt"
+		fi
+		echo ""
+	elif [[ ! -z `echo "${file}" | grep -w "139/tcp"` ]] && [[ $osType == "Linux" ]]; then
+		echo -e "${NC}"
+		echo -e "${YELLOW}SMB Recon:"
+		echo -e "${NC}"
+		echo "enum4linux -a $1 | tee $2/recon/enum4linux.txt"
+		echo ""
+	fi
+
+
+	if [ -f $2/nmap/full_scan.nmap ] && [[ ! -z `cat $2/nmap/full_scan.nmap | grep open | grep -w "161/udp"` ]]; then
+		echo -e "${NC}"
+		echo -e "${YELLOW}SNMP Recon:"
+		echo -e "${NC}"
+		echo "snmp-check $1 -c public | tee $2/recon/snmpcheck.txt"
+		echo ""
+	fi
+
 
 	IFS=$oldIFS
 
@@ -187,20 +255,26 @@ function runRecon() {
 	oldIFS=$IFS
 	IFS=$'\n'
 	
-	reconCommands=`cat $2/recon/recon.txt | grep $1 | grep -v odat`
+	reconCommands=`cat $3/recon/recon.txt | grep $2`
 
 	for line in `echo "${reconCommands}"`; do
 		currentScan=`echo $line | cut -d " " -f 1 | sed 's/.\///g; s/.py//g; s/cd/odat/g;' | sort -u | tr "\n" "," | sed 's/,/,\ /g' | head -c-2`
 		fileName=`echo "${line}" | awk -F "recon/" '{print $2}' | head -c-1`
 		if [ ! -z recon/`echo "${fileName}"` ] && [ ! -f recon/`echo "${fileName}"` ]; then
-			echo -e "${NC}"
-			echo -e "${YELLOW}Starting $currentScan scan"
-			echo -e "${NC}"
-			echo $line | /bin/bash
-			echo -e "${NC}"
-			echo -e "${YELLOW}Finished $currentScan scan"
-			echo -e "${NC}"
-			echo -e "${YELLOW}========================="
+			if [[ "$line" =~ "smbclient"|"smbmap"|"snmp-check"|"enum4linux" ]]; then 
+				tmux send-keys -t "$sesID:4.1" " $1 recurse3 $line $currentScan $filename" C-m
+			elif [[ "$line" =~ "joomscan"|"wpscan"|"droopescan" ]]; then
+				tmux send-keys -t "$sesID:4.2" " $1 recurse3 $line $currentScan $filename" C-m
+			else
+				echo -e "${NC}"
+				echo -e "${YELLOW}Starting $currentScan scan"
+				echo -e "${NC}"
+				echo $line | /bin/bash
+				echo -e "${NC}"
+				echo -e "${YELLOW}Finished $currentScan scan"
+				echo -e "${NC}"
+				echo -e "${YELLOW}========================="
+			fi
 		fi
 	done
 
@@ -209,6 +283,18 @@ function runRecon() {
 	echo -e ""
 	echo -e ""
 	echo -e ""
+}
+
+function displayRecon() {
+	sleep .5
+	echo -e "${NC}"
+	echo -e "${YELLOW}Starting $3 scan"
+	echo -e "${NC}"
+	echo $2 #| /bin/bash
+	echo -e "${NC}"
+	echo -e "${YELLOW}Finished $3 scan"
+	echo -e "${NC}"
+	echo -e "${YELLOW}========================="
 }
 
 function checkValid() {
@@ -228,7 +314,7 @@ function checkValid() {
 	fi
 }
 
-# set -x
+set -x
 
 # nmapScan / tmuxCreate / checkValid
 function footer() {
@@ -264,7 +350,7 @@ function footer() {
 		if [ "$2" == "recurse2" ]; then
 
 			reconRecommend $1 $3 | tee $3/recon/recon.txt
-			runRecon $1 $3
+			runRecon $0 $1 $3
 		else
 			# Select pane 1 in window 3
 			tmux selectp -t 2
@@ -275,108 +361,9 @@ function footer() {
 		fi
 	fi
 
-	# if [ "$2" == "recurse4" ]; then
-	# 	:
-	# else
-	# 	if [ "$2" == "recurse3" ]; then
-	# 		echo recurse 3
-	# 	else
-	# 		tmux selectp -t 4
-	# 		tmux send-keys "$0 $1 recurse3" C-m
-	# 		exit 1
-	# 	fi
-	# fi
-
-
-	# if [ "$2" == "recurse4" ]; then
-	# 	echo recurse 4
-	# else
-	# 	tmux selectp -t 5
-	# 	tmux send-keys "$0 $1 recurse4" C-m
-	# 	exit 1
-	# fi
+	if [ "$2" == "recurse3" ]; then
+		displayRecon $2 $3 $4
+	fi
 }
 
 footer $1 $2 $3
-
-
-# Functions to add
-# '
-# if [ -f nmap/UDP_$1.nmap ] && [[ ! -z `cat nmap/UDP_$1.nmap | grep open | grep -w "161/udp"` ]]; then
-# 	echo -e "${NC}"
-# 	echo -e "${YELLOW}SNMP Recon:"
-# 	echo -e "${NC}"
-# 	echo "snmp-check $1 -c public | tee recon/snmpcheck_$1.txt"
-# 	echo "snmpwalk -Os -c public -v $1 | tee recon/snmpwalk_$1.txt"
-# 	echo ""
-# fi
-# '
-
-# '
-# if [[ ! -z `echo "${file}" | grep -w "445/tcp"` ]]; then
-# 	echo -e "${NC}"
-# 	echo -e "${YELLOW}SMB Recon:"
-# 	echo -e "${NC}"
-# 	echo "smbmap -H $1 | tee recon/smbmap_$1.txt"
-# 	echo "smbclient -L \"//$1/\" -U \"guest\"% | tee recon/smbclient_$1.txt"
-# 	if [[ $osType == "Windows" ]]; then
-# 		echo "nmap -Pn -p445 --script vuln -oN recon/SMB_vulns_$1.txt $1"
-# 	fi
-# 	if [[ $osType == "Linux" ]]; then
-# 		echo "enum4linux -a $1 | tee recon/enum4linux_$1.txt"
-# 	fi
-# 	echo ""
-# elif [[ ! -z `echo "${file}" | grep -w "139/tcp"` ]] && [[ $osType == "Linux" ]]; then
-# 	echo -e "${NC}"
-# 	echo -e "${YELLOW}SMB Recon:"
-# 	echo -e "${NC}"
-# 	echo "enum4linux -a $1 | tee recon/enum4linux_$1.txt"
-# 	echo ""
-# fi
-# '
-
-# '
-# if [ -f nmap/Basic_$1.nmap ]; then
-# 	cms=`cat nmap/Basic_$1.nmap | grep http-generator | cut -d " " -f 2`
-# 	if [ ! -z `echo "${cms}"` ]; then
-# 		for line in $cms; do
-# 			port=`cat nmap/Basic_$1.nmap | grep $line -B1 | grep -w "open" | cut -d "/" -f 1`
-# 			if [[ "$cms" =~ ^(Joomla|WordPress|Drupal)$ ]]; then
-# 				echo -e "${NC}"
-# 				echo -e "${YELLOW}CMS Recon:"
-# 				echo -e "${NC}"
-# 			fi
-# 			case "$cms" in
-# 				Joomla!) echo "joomscan --url $1:$port | tee recon/joomscan_$1_$port.txt";;
-# 				WordPress) echo "wpscan --url $1:$port --enumerate p | tee recon/wpscan_$1_$port.txt";;
-# 				Drupal) echo "droopescan scan drupal -u $1:$port | tee recon/droopescan_$1_$port.txt";;
-# 			esac
-# 		done
-# 	fi
-# fi
-# '
-
-# ' # Use ffuf instead
-# if [[ ! -z `echo "${file}" | grep -w "53/tcp"` ]]; then
-# 	echo -e "${NC}"
-# 	echo -e "${YELLOW}DNS Recon:"
-# 	echo -e "${NC}"
-# 	echo "host -l $1 $1 | tee recon/hostname_$1.txt"
-# 	echo "dnsrecon -r $subnet/24 -n $1 | tee recon/dnsrecon_$1.txt"
-# 	echo "dnsrecon -r 127.0.0.0/24 -n $1 | tee recon/dnsrecon-local_$1.txt"
-# 	echo ""
-# fi
-# '
-
-# '
-# if [[ ! -z `echo "${file}" | grep -w "1521/tcp"` ]]; then
-# 	echo -e "${NC}"
-# 	echo -e "${YELLOW}Oracle Recon \"Exc. from Default\":"
-# 	echo -e "${NC}"
-# 	echo "cd /opt/odat/;#$1;"
-# 	echo "./odat.py sidguesser -s $1 -p 1521"
-# 	echo "./odat.py passwordguesser -s $1 -p 1521 -d XE --accounts-file accounts/accounts-multiple.txt"
-# 	echo "cd -;#$1;"
-# 	echo ""
-# fi
-# '
