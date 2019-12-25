@@ -55,6 +55,7 @@ function usage(){
 function nmapScan() {
 	echo -e ""
 
+	# Returns nmap "down" if "ttl" was not found in ping test
 	checkPing=`checkPing $1`
 
 	ttl=`echo "${checkPing}" | tail -n 1`
@@ -75,7 +76,7 @@ function nmapScan() {
 	echo -e "${GREEN}---------------------Starting Nmap Quick Scan---------------------"
 	echo -e "${NC}"
 
-	nmap -Pn -T4 --max-retries 1 --max-scan-delay 20 --defeat-rst-ratelimit -oN $2/nmap/quick_scan.nmap $1 
+	nmap -T4 --max-retries 1 --max-scan-delay 20 --defeat-rst-ratelimit -oN $2/nmap/quick_scan.nmap $1 
 
 	echo -e ""
 	echo -e ""
@@ -83,17 +84,8 @@ function nmapScan() {
 
 	echo -e "${GREEN}---------------------Starting Nmap Full Scan----------------------"
 	echo -e "${NC}"
-	nmap -Pn -sC -sV -p- --max-retries 1 --max-rate 500 --max-scan-delay 20 -oN $2/nmap/full_scan.nmap $1
 
-	echo -e ""
-	echo -e ""
-	echo -e ""
-
-	echo -e "${GREEN}---------------------Starting Nmap Vuln Scan----------------------"
-	echo -e "${NC}"
-
-	ports=`cat $2/nmap/full_scan.nmap | grep open | cut -d " " -f 1 | cut -d "/" -f 1 | tr "\n" "," | head -c-1`
-	tmux send-keys 'nmap --script vuln -p`echo "${ports}"` -oN $2/nmap/vuln_scan.nmap $1' C-m
+	nmap -sC -sV -T4 -p- -oN $2/nmap/full_scan.nmap $1
 
 	echo -e ""
 	echo -e ""
@@ -126,22 +118,36 @@ function checkOS() {
 function tmuxCreate() {	
 
 	tmux rename-window -t 1 "bg-tools"
-	tmux send-keys -Rt 1 "cherrytree $2/$2.ctb" C-m
-	tmux kill-pane -a -t 1
-	tmux split -v
-	tmux send-keys -Rt 2 "burpsuite"
+	tmux send-keys -t 1 "cherrytree $2/$2.ctb"
+	tmux split -h
+	tmux send-keys -t 2 "burpsuite"
 
-	declare -a names=("nmap/misc" "main")
-	n=1
+	declare -a names=("main" "nmap/web" "misc")
+	n=2
 	for x in "${names[@]}"; do
 	  	tmux new-window -t $n 2>/dev/null || tmux select-window -t $n && tmux rename-window -t $n "$x"
 
-	  	if [ "$n" == "1" ]; then 
+	  	if [ "$n" == "2" ]; then 
 	  		mkdir -p $2/{www,recon,nmap}
 	  		cp ~/htb/tools/htb_template.ctb $2/ && mv $2/htb_template.ctb $2/$2.ctb
 		fi
+
+	 	if [ "$n" == "3" ]; then
+	 		tmux kill-pane -a -t 1
+			tmux split -h
+		fi
+
+		if [ "$n" == "4" ]; then
+	 		tmux kill-pane -a -t 1
+			tmux split -h
+		fi
+
 		n=$(($n+1))
 	done
+
+	# Selecting window 3, pane 1 -- setup for running nmapScan
+	tmux select-window -t 3 && tmux selectp -t 1
+
 }
 
 reconRecommend(){
@@ -152,6 +158,7 @@ reconRecommend(){
 	if [ -f $2/nmap/full_scan.nmap ]; then		
 		ports=`cat $2/nmap/full_scan.nmap | grep open | cut -d " " -f 1 | cut -d "/" -f 1 | tr "\n" "," | head -c-1`
 		file=`cat $2/nmap/full_scan.nmap | grep -w "open"`
+
 	fi
 
 	osType="$(checkOS $ttl)"
@@ -171,10 +178,10 @@ reconRecommend(){
 			pages=.php,.html
 			if [[ ! -z `echo "${line}" | grep ssl/http` ]]; then
 				echo "sslscan $1 | tee $2/recon/sslscan_$port.txt"
-				echo "ffuf -u https://$1:$port/FUZZ -w /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt -r -e $pages -o $2/recon/dirb_$port.txt"
+				echo "ffuf -u https://$1:$port/FUZZ -w /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt -t 40 -r -e $pages -o $2/recon/dirb_$port.txt"
 				echo "nikto -host https://$1:$port -ssl | tee $2/recon/nikto_$port.txt"
 			else
-				echo "ffuf -u https://$1:$port/FUZZ -w /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt -r -e $pages -o $2/recon/dirb_$port.txt"
+				echo "ffuf -u https://$1:$port/FUZZ -w /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt -t 40 -r -e $pages -o $2/recon/dirb_$port.txt"
 				echo "nikto -host $1:$port | tee $2/recon/nikto_$port.txt"
 			fi
 			echo ""
@@ -182,7 +189,7 @@ reconRecommend(){
 	done
 
 	if [ -f $2/nmap/full_scan.nmap ]; then
-	cms=`cat $2/nmap/full_scan.nmap | grep http-generator | cut -d " " -f 2`
+	cms=`cat $2/nmap/full_scan.nmapp | grep http-generator | cut -d " " -f 2`
 		if [ ! -z `echo "${cms}"` ]; then
 			for line in $cms; do
 				port=`cat nmap/Basic_$1.nmap | grep $line -B1 | grep -w "open" | cut -d "/" -f 1`
@@ -254,14 +261,20 @@ function runRecon() {
 		currentScan=`echo $line | cut -d " " -f 1 | sed 's/.\///g; s/.py//g; s/cd/odat/g;' | sort -u | tr "\n" "," | sed 's/,/,\ /g' | head -c-2`
 		fileName=`echo "${line}" | awk -F "recon/" '{print $2}' | head -c-1`
 		if [ ! -z recon/`echo "${fileName}"` ] && [ ! -f recon/`echo "${fileName}"` ]; then
-			echo -e "${NC}"
-			echo -e "${YELLOW}Starting $currentScan scan"
-			echo -e "${NC}"
-			echo $line | /bin/bash
-			echo -e "${NC}"
-			echo -e "${YELLOW}Finished $currentScan scan"
-			echo -e "${NC}"
-			echo -e "${YELLOW}========================="
+			if [[ "$line" =~ "smbclient"|"smbmap"|"snmp-check"|"enum4linux" ]]; then 
+				tmux send-keys -t "$sesID:4.1" " $1 recurse3 $line $currentScan $filename" C-m
+			elif [[ "$line" =~ "joomscan"|"wpscan"|"droopescan" ]]; then
+				tmux send-keys -t "$sesID:4.2" " $1 recurse3 $line $currentScan $filename" C-m
+			else
+				echo -e "${NC}"
+				echo -e "${YELLOW}Starting $currentScan scan"
+				echo -e "${NC}"
+				echo $line | /bin/bash
+				echo -e "${NC}"
+				echo -e "${YELLOW}Finished $currentScan scan"
+				echo -e "${NC}"
+				echo -e "${YELLOW}========================="
+			fi
 		fi
 	done
 
@@ -270,6 +283,18 @@ function runRecon() {
 	echo -e ""
 	echo -e ""
 	echo -e ""
+}
+
+function displayRecon() {
+	sleep .5
+	echo -e "${NC}"
+	echo -e "${YELLOW}Starting $3 scan"
+	echo -e "${NC}"
+	echo $2 #| /bin/bash
+	echo -e "${NC}"
+	echo -e "${YELLOW}Finished $3 scan"
+	echo -e "${NC}"
+	echo -e "${YELLOW}========================="
 }
 
 function checkValid() {
@@ -289,12 +314,14 @@ function checkValid() {
 	fi
 }
 
+set -x
+
 # nmapScan / tmuxCreate / checkValid
 function footer() {
 	# Checks if the first arg is a valid IP
 	checkValid $1
 
-	if [ "$2" == "recurse2" ]; then
+	if [[ $2 =~ recurse4|recurse3|recurse2 ]]; then
 		:
 	else	
 		if [ "$2" == "recurse1" ]; then
@@ -317,19 +344,26 @@ function footer() {
 		fi
 	fi
 
-	if [ "$2" == "recurse2" ]; then
-
-		reconRecommend $1 $3 | tee $3/recon/recon.txt
-		runRecon $0 $1 $3
+	if [[ $2 =~ recurse4|recurse3 ]]; then
+		:
 	else
-		# Select pane 1 in window 3
-		tmux selectp -t 2
+		if [ "$2" == "recurse2" ]; then
 
-		# Call script to run recondRecommend in new window/pane
-		tmux send-keys "$0 $1 recurse2 $3" C-m
-		exit 1
+			reconRecommend $1 $3 | tee $3/recon/recon.txt
+			runRecon $0 $1 $3
+		else
+			# Select pane 1 in window 3
+			tmux selectp -t 2
+
+			# Call script to run recondRecommend in new window/pane
+			tmux send-keys "$0 $1 recurse2 $3" C-m
+			exit 1
+		fi
 	fi
-	
+
+	if [ "$2" == "recurse3" ]; then
+		displayRecon $2 $3 $4
+	fi
 }
 
 footer $1 $2 $3
